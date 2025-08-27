@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 # ------------------------------
 # App config
 # ------------------------------
-st.set_page_config(page_title="PO Generator – Manual Input", page_icon="📝", layout="wide")
+st.set_page_config(page_title="PO Generator – Manual Input (Bundled Template)", page_icon="📝", layout="wide")
 st.title("📝 Purchase Order Generator — Manual Input")
 st.caption("Enter Control NO, Item NO, JAN/Barcode, Qty, Price, Delivery (no spreadsheet needed). The app fills your template — green areas stay static; blue fields are filled.")
 
@@ -39,58 +39,9 @@ def sanitize_sheet_title(title: str) -> str:
 # Sidebar: template
 # ------------------------------
 with st.sidebar:
-    st.header("Template")
-    tpl_file = st.file_uploader("Upload TEMPLATE .xlsx", type=["xlsx"], help="Use your green/blue colored template")
+    st.header("Settings")
     remove_template_sheet = st.checkbox("Remove original template sheet in output", value=True)
-
-# ------------------------------
-# Manual input table
-# ------------------------------
-st.subheader("Enter PO lines")
-
-if "rows" not in st.session_state:
-    st.session_state.rows = [
-        {"Control NO": "", "Item NO": "", "Barcode": "", "Qty": "", "Price": "", "Delivery": ""}
-    ]
-
-cols = st.columns([1,1,1,1,1,1,0.6])
-with cols[0]: ctrl = st.text_input("Control NO", value=st.session_state.rows[-1]["Control NO"]) 
-with cols[1]: item = st.text_input("Item NO", value=st.session_state.rows[-1]["Item NO"]) 
-with cols[2]: jan  = st.text_input("JAN / Barcode", value=st.session_state.rows[-1]["Barcode"]) 
-with cols[3]: qty  = st.text_input("Qty", value=str(st.session_state.rows[-1]["Qty"]))
-with cols[4]: price= st.text_input("Price (e.g. 60.600)", value=str(st.session_state.rows[-1]["Price"]))
-with cols[5]: delv = st.text_input("Delivery", value=st.session_state.rows[-1]["Delivery"]) 
-add = cols[6].button("➕ Add line")
-
-if add:
-    st.session_state.rows.append({
-        "Control NO": ctrl, "Item NO": item, "Barcode": jan,
-        "Qty": qty, "Price": price, "Delivery": delv
-    })
-
-# Show current lines
-if st.session_state.rows:
-    df = pd.DataFrame(st.session_state.rows)
-    st.dataframe(df, use_container_width=True)
-
-# Utility to parse numbers with commas/yen and 3 decimals
-
-def to_float(x):
-    if x is None: return None
-    s = str(x).strip()
-    if not s: return None
-    s = s.replace(",", "").replace("￥", "").replace("¥", "")
-    try:
-        return float(s)
-    except Exception:
-        try:
-            return float(s.replace(" ", ""))
-        except Exception:
-            return None
-
-def to_int(x):
-    f = to_float(x)
-    return int(round(f)) if f is not None else None
+    st.info("Template is bundled in the app; no upload needed.")
 
 st.markdown("---")
 make_btn = st.button("📦 Generate PurchaseOrders.xlsx")
@@ -109,11 +60,15 @@ if make_btn:
         st.error("Please add at least one line with Control NO and Item NO.")
         st.stop()
 
-    # Load template workbook
+    # Load template workbook from a fixed bundled path
+    TEMPLATE_PATH = "template/8995-0001 GEL-2-2 ORDER.xlsx"  # keep this file in the repo
     try:
-        wb = load_workbook(tpl_file, data_only=False, keep_vba=False)
+        wb = load_workbook(TEMPLATE_PATH, data_only=False, keep_vba=False)
+    except FileNotFoundError:
+        st.error(f"Bundled template not found at '{TEMPLATE_PATH}'. Please place your template there and rerun.")
+        st.stop()
     except Exception as e:
-        st.error(f"Failed to load template: {e}")
+        st.error(f"Failed to load bundled template: {e}")
         st.stop()
 
     tpl_ws = wb.active
