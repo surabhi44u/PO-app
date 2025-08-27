@@ -1,37 +1,20 @@
 import io
 import re
-from typing import Dict
+from typing import List
 
 import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
 
-# ----------------------------------
-# Streamlit UI
-# ----------------------------------
-st.set_page_config(page_title="PO Generator (Fixed Mapping)", page_icon="📄", layout="wide")
-st.title("📄 Purchase Order Generator — Fixed Mapping")
-st.caption("Green areas stay static. Blue fields are filled from your input. One sheet per (Control NO, Item NO). If auto-detect fails, use the mapping dropdowns.")
+# ------------------------------
+# App config
+# ------------------------------
+st.set_page_config(page_title="PO Generator – Manual Input", page_icon="📝", layout="wide")
+st.title("📝 Purchase Order Generator — Manual Input")
+st.caption("Enter Control NO, Item NO, JAN/Barcode, Qty, Price, Delivery (no spreadsheet needed). The app fills your template — green areas stay static; blue fields are filled.")
 
-with st.sidebar:
-    st.header("Inputs")
-    input_file = st.file_uploader("Upload INPUT Excel (.xlsm/.xlsx)", type=["xlsm", "xlsx"])
-    sheet_name = st.text_input("Input sheet name", value="250826")
-    header_row_1based = st.number_input(
-        "Header row (1 = first row)", min_value=1, value=1, step=1,
-        help="If your headers aren't on the first row, set the correct row here."
-    )
-    template_file = st.file_uploader("Upload TEMPLATE .xlsx", type=["xlsx"], help="Use the colored template you provided")
-    remove_template_sheet = st.checkbox("Remove the original template sheet from output", value=True)
-    show_preview = st.checkbox("Show input preview & detected columns", value=True)
-    btn = st.button("Generate Purchase Orders")
-
-# ----------------------------------
-# Helpers
-# ----------------------------------
-INVALID_SHEET_CHARS = r"[:\\\\/?*\[\]]"
-
-FIXED_CELL_MAP = {
+# Fixed cell mapping in the template (blue fields)
+CELL = {
     "control_no": "AD9",
     "item_no": "E16",
     "barcode": "S16",
@@ -42,189 +25,148 @@ FIXED_CELL_MAP = {
     "amount": "F37",
 }
 
+# Cells to clear and rows to delete as per your instructions
 CELLS_TO_CLEAR = ["E18", "E20", "E24", "N24", "B26", "A35", "R37", "F39"]
+DELETE_ROWS = (60, 5)  # start row, count
 
+INVALID_SHEET_CHARS = r"[:\\\\/?*\[\]]"
 
 def sanitize_sheet_title(title: str) -> str:
     title = re.sub(INVALID_SHEET_CHARS, "-", str(title)).strip() or "Sheet"
     return title[:31]
 
-# Likely header names in your files (we'll try these first)
-PREFERRED = {
-    "control_no": ["Control NO", "CONTROL NO", "Control No", "control no", "ControlNO", "Ctrl No", "Control"],
-    "item_no": ["Item NO", "ITEM NO", "Item No", "item no", "Item code", "品番", "品番 / Item no"],
-    "barcode": ["Barcode", "JAN", "JAN code", "JAN Code", "JANコード"],
-    "qty": ["Qty", "QTY", "Quantity", "数量"],
-    "price": ["Price", "単価", "Unit Price", "Unit price"],
-    "delivery": ["Delivery time", "Delivery", "Delivery date", "納期"],
-}
+# ------------------------------
+# Sidebar: template
+# ------------------------------
+with st.sidebar:
+    st.header("Template")
+    tpl_file = st.file_uploader("Upload TEMPLATE .xlsx", type=["xlsx"], help="Use your green/blue colored template")
+    remove_template_sheet = st.checkbox("Remove original template sheet in output", value=True)
 
+# ------------------------------
+# Manual input table
+# ------------------------------
+st.subheader("Enter PO lines")
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    cols = (
-        pd.Series(df.columns, dtype="string")
-        .fillna("")
-        .str.replace("\u00A0", " ", regex=False)
-        .str.replace("\n", " ", regex=False)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
-    df.columns = cols
-    return df
+if "rows" not in st.session_state:
+    st.session_state.rows = [
+        {"Control NO": "", "Item NO": "", "Barcode": "", "Qty": "", "Price": "", "Delivery": ""}
+    ]
 
+cols = st.columns([1,1,1,1,1,1,0.6])
+with cols[0]: ctrl = st.text_input("Control NO", value=st.session_state.rows[-1]["Control NO"]) 
+with cols[1]: item = st.text_input("Item NO", value=st.session_state.rows[-1]["Item NO"]) 
+with cols[2]: jan  = st.text_input("JAN / Barcode", value=st.session_state.rows[-1]["Barcode"]) 
+with cols[3]: qty  = st.text_input("Qty", value=str(st.session_state.rows[-1]["Qty"]))
+with cols[4]: price= st.text_input("Price (e.g. 60.600)", value=str(st.session_state.rows[-1]["Price"]))
+with cols[5]: delv = st.text_input("Delivery", value=st.session_state.rows[-1]["Delivery"]) 
+add = cols[6].button("➕ Add line")
 
-@st.cache_data(show_spinner=False)
-def load_input(_file, _sheet, header_idx: int) -> pd.DataFrame:
-    df = pd.read_excel(_file, sheet_name=_sheet, engine="openpyxl", header=header_idx)
-    return normalize_columns(df)
+if add:
+    st.session_state.rows.append({
+        "Control NO": ctrl, "Item NO": item, "Barcode": jan,
+        "Qty": qty, "Price": price, "Delivery": delv
+    })
 
+# Show current lines
+if st.session_state.rows:
+    df = pd.DataFrame(st.session_state.rows)
+    st.dataframe(df, use_container_width=True)
 
-def find_col(df: pd.DataFrame, candidates) -> str:
-    # exact
-    for cand in candidates:
-        for c in df.columns:
-            if c == cand:
-                return c
-    # case-insensitive exact
-    for cand in candidates:
-        cl = cand.lower()
-        for c in df.columns:
-            if c.lower() == cl:
-                return c
-    # contains
-    for cand in candidates:
-        cl = cand.lower()
-        for c in df.columns:
-            if cl in c.lower():
-                return c
-    return None
+# Utility to parse numbers with commas/yen and 3 decimals
 
-
-# ----------------------------------
-# Main action
-# ----------------------------------
-if btn:
-    if not input_file or not template_file:
-        st.error("Please upload both the INPUT workbook and the TEMPLATE workbook.")
-        st.stop()
-
+def to_float(x):
+    if x is None: return None
+    s = str(x).strip()
+    if not s: return None
+    s = s.replace(",", "").replace("￥", "").replace("¥", "")
     try:
-        df = load_input(input_file, sheet_name, header_row_1based - 1)
-    except Exception as e:
-        st.error(f"Could not read sheet '{sheet_name}': {e}")
-        st.stop()
-
-    if df.empty:
-        st.error("The input sheet appears to be empty.")
-        st.stop()
-
-    if show_preview:
-        st.subheader("Input preview")
-        st.dataframe(df.head(20))
-        st.write("Detected headers:", list(df.columns))
-
-    # Auto-detect columns
-    cols: Dict[str, str] = {}
-    for key, cands in PREFERRED.items():
-        cols[key] = find_col(df, cands)
-
-    required = ["control_no", "item_no", "barcode", "qty", "price", "delivery"]
-    missing = [k for k in required if not cols.get(k)]
-
-    # Fallback mapping UI if any missing
-    if missing:
-        st.warning("Auto-detection failed for some fields. Please map them manually.")
-        for key in required:
-            guess = cols.get(key)
-            cols[key] = st.selectbox(
-                f"Select column for {key.replace('_',' ').title()}",
-                options=[guess] + [c for c in df.columns if c != guess] if guess else [None] + list(df.columns),
-                index=0,
-            )
-        if any(v is None for v in cols.values()):
-            st.stop()
-
-    # Deduplicate: first row per (Control NO, Item NO)
-    df_sorted = df.copy()
-    df_sorted["__group_key__"] = (
-        df_sorted[cols["control_no"]].astype(str).str.strip() + "\u0001" +
-        df_sorted[cols["item_no"]].astype(str).str.strip()
-    )
-    first_rows = df_sorted.drop_duplicates("__group_key__", keep="first").reset_index(drop=True)
-
-    def to_float(x):
-        if pd.isna(x):
-            return None
-        s = str(x)
-        s = s.replace(",", "").replace("￥", "").replace("¥", "").strip()
+        return float(s)
+    except Exception:
         try:
-            return float(s)
+            return float(s.replace(" ", ""))
         except Exception:
-            try:
-                return float(s.replace(" ", ""))
-            except Exception:
-                return None
+            return None
 
-    def to_int(x):
-        f = to_float(x)
-        return int(round(f)) if f is not None else None
+def to_int(x):
+    f = to_float(x)
+    return int(round(f)) if f is not None else None
+
+st.markdown("---")
+make_btn = st.button("📦 Generate PurchaseOrders.xlsx")
+
+if make_btn:
+    # Validations
+    if not tpl_file:
+        st.error("Please upload your TEMPLATE .xlsx in the sidebar.")
+        st.stop()
+    # Filter out empty rows (need Control NO and Item NO at minimum)
+    entries: List[dict] = []
+    for r in st.session_state.rows:
+        if str(r.get("Control NO", "")).strip() and str(r.get("Item NO", "")).strip():
+            entries.append(r)
+    if not entries:
+        st.error("Please add at least one line with Control NO and Item NO.")
+        st.stop()
 
     # Load template workbook
     try:
-        wb = load_workbook(template_file, data_only=False, keep_vba=False)
+        wb = load_workbook(tpl_file, data_only=False, keep_vba=False)
     except Exception as e:
-        st.error(f"Failed to open template: {e}")
+        st.error(f"Failed to load template: {e}")
         st.stop()
 
     tpl_ws = wb.active
     created = []
 
-    for _, r in first_rows.iterrows():
-        control_no = str(r[cols["control_no"]]).strip()
-        item_no    = str(r[cols["item_no"]]).strip()
-        barcode    = str(r[cols["barcode"]]).strip()
-        qty        = to_int(r[cols["qty"]])
-        price      = to_float(r[cols["price"]])
-        delivery   = str(r[cols["delivery"]]).strip()
+    for r in entries:
+        control_no = str(r.get("Control NO", "")).strip()
+        item_no    = str(r.get("Item NO", "")).strip()
+        barcode    = str(r.get("Barcode", "")).strip()
+        qty        = to_int(r.get("Qty"))
+        price      = to_float(r.get("Price"))
+        delivery   = str(r.get("Delivery", "")).strip()
 
         ws = wb.copy_worksheet(tpl_ws)
         ws.title = sanitize_sheet_title(f"{control_no}_{item_no}")
 
         # Fill dynamic cells (BLUE)
-        try: ws[FIXED_CELL_MAP["control_no"]] = control_no
+        try: ws[CELL["control_no"]] = control_no
         except: pass
-        try: ws[FIXED_CELL_MAP["item_no"]] = item_no
+        try: ws[CELL["item_no"]] = item_no
         except: pass
-        try: ws[FIXED_CELL_MAP["barcode"]] = barcode
+        try: ws[CELL["barcode"]] = barcode
         except: pass
-        try: ws[FIXED_CELL_MAP["delivery"]] = delivery
+        try: ws[CELL["delivery"]] = delivery
         except: pass
-        try: ws[FIXED_CELL_MAP["qty"]] = qty
+        try: ws[CELL["qty"]] = qty
         except: pass
-        try: ws[FIXED_CELL_MAP["price1"]] = price
+        try: ws[CELL["price1"]] = price
         except: pass
-        try: ws[FIXED_CELL_MAP["price2"]] = price
+        try: ws[CELL["price2"]] = price
         except: pass
         try:
             amount = (qty or 0) * (price or 0)
-            ws[FIXED_CELL_MAP["amount"]] = amount
+            ws[CELL["amount"]] = amount
         except: pass
 
-        # Clear cells
-        for cell in CELLS_TO_CLEAR:
-            try: ws[cell] = None
+        # Clear non-blue cells requested
+        for c in CELLS_TO_CLEAR:
+            try: ws[c] = None
             except: pass
 
-        # Delete rows 60–64
-        try: ws.delete_rows(60, 5)
+        # Delete extra rows
+        try: ws.delete_rows(*DELETE_ROWS)
         except: pass
 
         created.append(ws.title)
 
+    # Remove template sheet if asked
     if remove_template_sheet:
         try: wb.remove(tpl_ws)
         except: pass
 
+    # Return the workbook
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -237,18 +179,20 @@ if btn:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    with st.expander("Detected column mapping"):
-        st.json(cols)
-    with st.expander("Sheets created"):
-        st.write(created)
-
 st.markdown("---")
 st.markdown(
     """
-**Fixed cell mapping (blue fields):**  AD9 (Control NO), E16 (Item No), S16 (JAN/Barcode), B28 (Delivery), AA24 (Qty), N30 & N32 (Price), F37 (Amount = Qty×Price)
+**Template mapping (blue fields):**  
+- Control NO → `AD9`  
+- Item No → `E16`  
+- JAN / Barcode → `S16`  
+- Delivery time/date → `B28`  
+- Qty → `AA24`  
+- Price → `N30` and `N32`  
+- Amount → `F37` (calculated)
 
-**Cleanup applied to each sheet:**  Clears E18, E20, E24, N24, B26, A35, R37, F39; deletes rows 60–64.
-
-If you still see NULLs, set the **Header row** correctly and, if needed, use the **manual mapping** dropdowns. The preview shows the first 20 rows and the detected headers for troubleshooting.
+**Other actions:** Clears `E18, E20, E24, N24, B26, A35, R37, F39` and deletes rows `60–64`.  
+**Sheet name:** `ControlNo_ItemNo`.  
+**Tip:** Enter numbers with or without commas/yen (e.g. `6,000`, `¥60.600`). The app will parse them correctly.
 """
 )
