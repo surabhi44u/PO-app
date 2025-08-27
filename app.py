@@ -23,6 +23,7 @@ with st.sidebar:
     )
     template_file = st.file_uploader("Upload TEMPLATE .xlsx", type=["xlsx"], help="Use the colored template you provided")
     remove_template_sheet = st.checkbox("Remove the original template sheet from output", value=True)
+    show_preview = st.checkbox("Show input preview & detected columns", value=True)
     btn = st.button("Generate Purchase Orders")
 
 # ----------------------------------
@@ -30,18 +31,34 @@ with st.sidebar:
 # ----------------------------------
 INVALID_SHEET_CHARS = r"[:\\\\/?*\[\]]"
 
+FIXED_CELL_MAP = {
+    "control_no": "AD9",
+    "item_no": "E16",
+    "barcode": "S16",
+    "delivery": "B28",
+    "qty": "AA24",
+    "price1": "N30",
+    "price2": "N32",
+    "amount": "F37",
+}
+
+CELLS_TO_CLEAR = ["E18", "E20", "E24", "N24", "B26", "A35", "R37", "F39"]
+
+
 def sanitize_sheet_title(title: str) -> str:
     title = re.sub(INVALID_SHEET_CHARS, "-", str(title)).strip() or "Sheet"
     return title[:31]
 
+# Likely header names in your files (we'll try these first)
 PREFERRED = {
-    "control_no": ["Control NO", "CONTROL NO", "Control No", "control no", "ControlNO", "Ctrl No", "Control code", "Control"],
+    "control_no": ["Control NO", "CONTROL NO", "Control No", "control no", "ControlNO", "Ctrl No", "Control"],
     "item_no": ["Item NO", "ITEM NO", "Item No", "item no", "Item code", "品番", "品番 / Item no"],
     "barcode": ["Barcode", "JAN", "JAN code", "JAN Code", "JANコード"],
     "qty": ["Qty", "QTY", "Quantity", "数量"],
     "price": ["Price", "単価", "Unit Price", "Unit price"],
     "delivery": ["Delivery time", "Delivery", "Delivery date", "納期"],
 }
+
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     cols = (
@@ -55,29 +72,33 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = cols
     return df
 
+
 @st.cache_data(show_spinner=False)
 def load_input(_file, _sheet, header_idx: int) -> pd.DataFrame:
     df = pd.read_excel(_file, sheet_name=_sheet, engine="openpyxl", header=header_idx)
     return normalize_columns(df)
 
+
 def find_col(df: pd.DataFrame, candidates) -> str:
-    # exact match
+    # exact
     for cand in candidates:
         for c in df.columns:
             if c == cand:
                 return c
     # case-insensitive exact
     for cand in candidates:
+        cl = cand.lower()
         for c in df.columns:
-            if c.lower() == cand.lower():
+            if c.lower() == cl:
                 return c
     # contains
     for cand in candidates:
-        low = cand.lower()
+        cl = cand.lower()
         for c in df.columns:
-            if low in c.lower():
+            if cl in c.lower():
                 return c
     return None
+
 
 # ----------------------------------
 # Main action
@@ -97,6 +118,11 @@ if btn:
         st.error("The input sheet appears to be empty.")
         st.stop()
 
+    if show_preview:
+        st.subheader("Input preview")
+        st.dataframe(df.head(20))
+        st.write("Detected headers:", list(df.columns))
+
     # Auto-detect columns
     cols: Dict[str, str] = {}
     for key, cands in PREFERRED.items():
@@ -109,12 +135,12 @@ if btn:
     if missing:
         st.warning("Auto-detection failed for some fields. Please map them manually.")
         for key in required:
+            guess = cols.get(key)
             cols[key] = st.selectbox(
                 f"Select column for {key.replace('_',' ').title()}",
-                options=[cols.get(key)] + [c for c in df.columns if c != cols.get(key)],
+                options=[guess] + [c for c in df.columns if c != guess] if guess else [None] + list(df.columns),
                 index=0,
             )
-        # If user leaves any None, stop
         if any(v is None for v in cols.values()):
             st.stop()
 
@@ -165,27 +191,27 @@ if btn:
         ws.title = sanitize_sheet_title(f"{control_no}_{item_no}")
 
         # Fill dynamic cells (BLUE)
-        try: ws["AD9"] = control_no
+        try: ws[FIXED_CELL_MAP["control_no"]] = control_no
         except: pass
-        try: ws["E16"] = item_no
+        try: ws[FIXED_CELL_MAP["item_no"]] = item_no
         except: pass
-        try: ws["S16"] = barcode
+        try: ws[FIXED_CELL_MAP["barcode"]] = barcode
         except: pass
-        try: ws["B28"] = delivery
+        try: ws[FIXED_CELL_MAP["delivery"]] = delivery
         except: pass
-        try: ws["AA24"] = qty
+        try: ws[FIXED_CELL_MAP["qty"]] = qty
         except: pass
-        try: ws["N30"] = price
+        try: ws[FIXED_CELL_MAP["price1"]] = price
         except: pass
-        try: ws["N32"] = price
+        try: ws[FIXED_CELL_MAP["price2"]] = price
         except: pass
         try:
             amount = (qty or 0) * (price or 0)
-            ws["F37"] = amount
+            ws[FIXED_CELL_MAP["amount"]] = amount
         except: pass
 
         # Clear cells
-        for cell in ["E18", "E20", "E24", "N24", "B26", "A35", "R37", "F39"]:
+        for cell in CELLS_TO_CLEAR:
             try: ws[cell] = None
             except: pass
 
@@ -211,6 +237,8 @@ if btn:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
+    with st.expander("Detected column mapping"):
+        st.json(cols)
     with st.expander("Sheets created"):
         st.write(created)
 
@@ -221,6 +249,6 @@ st.markdown(
 
 **Cleanup applied to each sheet:**  Clears E18, E20, E24, N24, B26, A35, R37, F39; deletes rows 60–64.
 
-If you still see NULLs, set the **Header row** correctly and, if needed, use the **manual mapping** dropdowns.
+If you still see NULLs, set the **Header row** correctly and, if needed, use the **manual mapping** dropdowns. The preview shows the first 20 rows and the detected headers for troubleshooting.
 """
 )
